@@ -62,7 +62,7 @@ target_compile_definitions(saintnova_core PUBLIC
   _WIN32_WINNT=0x0A00
 )
 
-target_link_libraries(saintnova_core PUBLIC Luau.VM Luau.Compiler Luau.Ast bcrypt)
+target_link_libraries(saintnova_core PUBLIC Luau.VM Luau.Compiler Luau.Ast bcrypt advapi32)
 
 if(MSVC)
   target_compile_options(saintnova_core PRIVATE /W4 /permissive- /utf-8)

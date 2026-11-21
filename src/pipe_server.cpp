@@ -1,6 +1,7 @@
 #include "saintnova/pipe_server.hpp"
 
 #include <windows.h>
+#include <sddl.h>
 
 #include <algorithm>
 #include <chrono>
@@ -21,6 +22,39 @@ std::wstring widen(const std::string& utf8) {
 }
 
 constexpr DWORD kPipeBuffer = 64 * 1024;
+
+// The pipe can execute arbitrary Luau and shut down the server. Give access
+// only to the account running this process and LocalSystem.
+PSECURITY_DESCRIPTOR make_pipe_security_descriptor() {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return nullptr;
+
+    DWORD required = 0;
+    GetTokenInformation(token, TokenUser, nullptr, 0, &required);
+    if (required == 0) {
+        CloseHandle(token);
+        return nullptr;
+    }
+
+    std::vector<std::uint8_t> token_user(required);
+    if (!GetTokenInformation(token, TokenUser, token_user.data(), required, &required)) {
+        CloseHandle(token);
+        return nullptr;
+    }
+    CloseHandle(token);
+
+    LPWSTR sid_text = nullptr;
+    const auto* user = reinterpret_cast<const TOKEN_USER*>(token_user.data());
+    if (!ConvertSidToStringSidW(user->User.Sid, &sid_text)) return nullptr;
+
+    const std::wstring sddl = std::wstring(L"D:P(A;;GA;;;SY)(A;;GA;;;") + sid_text + L")";
+    LocalFree(sid_text);
+
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr)) return nullptr;
+    return descriptor;
+}
 
 // Issues one overlapped read or write and waits for it to finish.
 //
@@ -213,10 +247,17 @@ bool PipeServer::start(const std::string& name, FrameHandler handler, std::strin
 void PipeServer::accept_loop() {
     const std::wstring full_name = widen(full_name_);
 
+    PSECURITY_DESCRIPTOR descriptor = make_pipe_security_descriptor();
+    if (descriptor == nullptr) {
+        running_ = false;
+        return;
+    }
+    SECURITY_ATTRIBUTES security{sizeof(SECURITY_ATTRIBUTES), descriptor, FALSE};
+
     while (running_) {
         HANDLE pipe = CreateNamedPipeW(full_name.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
-                                       PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-                                       PIPE_UNLIMITED_INSTANCES, kPipeBuffer, kPipeBuffer, 0, nullptr);
+                                       PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                                       PIPE_UNLIMITED_INSTANCES, kPipeBuffer, kPipeBuffer, 0, &security);
         if (pipe == INVALID_HANDLE_VALUE) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             continue;
@@ -257,6 +298,7 @@ void PipeServer::accept_loop() {
 
         std::thread([client]() { client->reader_loop(); }).detach();
     }
+    LocalFree(descriptor);
 }
 
 void PipeServer::stop() {

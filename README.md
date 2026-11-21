@@ -14,9 +14,11 @@ not included.
 
 ## Download
 
-Prebuilt Windows x64 release: [v0.1.0](https://github.com/CorkyPotato/SaintNova-Roblox-Executor/releases/tag/v0.1.0).
-The zip includes the executable, Studio place, UI, docs, and quickstart. Build
-from source below if you prefer.
+Prefer building from source using the instructions below. GitHub Actions builds
+the checked-out source with MSVC, runs the test suite, and creates a SHA-256
+manifest plus a GitHub build-provenance attestation for tagged builds. A hash
+proves artifact integrity, not that the program is safe; review the source and
+workflow before running any build.
 
 ## Status
 

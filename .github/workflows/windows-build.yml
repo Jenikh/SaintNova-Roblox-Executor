@@ -1,0 +1,108 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: MSVC x64 / Windows
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Configure MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: Configure
+        shell: pwsh
+        run: >-
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER=cl
+          -DCMAKE_CXX_COMPILER=cl
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build --parallel
+
+      - name: Run test suite
+        shell: pwsh
+        run: ./scripts/test.ps1 -SkipBuild
+
+      - name: Stage release files and SHA-256 manifest
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item build/bin/saintnova.exe dist/
+          if (Test-Path build/bin/saintnova.dll) {
+            Copy-Item build/bin/saintnova.dll dist/
+          }
+          Copy-Item README.md, LICENSE, NOTICE.md, THIRD_PARTY_NOTICES.md dist/
+          $lines = @(
+            "Repository: $env:GITHUB_REPOSITORY",
+            "Commit: $env:GITHUB_SHA",
+            "Workflow: $env:GITHUB_WORKFLOW",
+            "Run: $env:GITHUB_RUN_ID",
+            "Compiler: MSVC x64",
+            "Configuration: Release",
+            ""
+          )
+          Get-ChildItem dist -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } |
+            Sort-Object Name | ForEach-Object {
+              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              $lines += "$hash  $($_.Name)"
+            }
+          Set-Content -Path dist/SHA256SUMS.txt -Value $lines -Encoding utf8
+          Compress-Archive -Path dist/* -DestinationPath saintnova-windows-x64.zip -Force
+
+      - name: Attest release archive provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: saintnova-windows-x64.zip
+
+      - name: Upload CI binaries
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: saintnova-windows-x64-${{ github.sha }}
+          path: |
+            build/bin/saintnova.exe
+            build/bin/saintnova.dll
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload tagged release archive
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: saintnova-release-${{ github.ref_name }}
+          path: saintnova-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 90
